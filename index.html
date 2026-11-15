@@ -153,6 +153,23 @@ button{font:inherit;color:inherit;border:0;background:none;cursor:pointer;paddin
 .shake{animation:shake .35s}
 @keyframes shake{25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* account */
+.acc{margin:16px 18px 0;border:1.5px solid var(--line);border-radius:var(--r);padding:16px;background:var(--soft)}
+.acc h3{margin:0 0 4px;font-size:17px;letter-spacing:-.01em}
+.acc p{margin:0 0 12px;color:var(--mut);font-weight:600;font-size:14px}
+.acc input{display:block;width:100%;font:inherit;font-size:16px;border:1.5px solid var(--line);border-radius:12px;padding:12px 14px;margin:0 0 10px;background:#fff;color:var(--ink);outline:none}
+.acc input:focus{border-color:var(--g)}
+.acc .row{display:flex;gap:10px}
+.acc .row .btn{padding:13px 8px}
+.acc .or{display:flex;align-items:center;gap:10px;margin:12px 0;color:var(--mut);font-size:13px;font-weight:700}
+.acc .or::before,.acc .or::after{content:"";flex:1;height:1.5px;background:var(--line)}
+.acc .lnk{display:block;margin:10px auto 0;color:var(--g-d);font-weight:700;font-size:14px;text-decoration:underline}
+.acc .err{min-height:20px;margin:8px 0 0;font-size:14px;font-weight:700;color:var(--bad)}
+.acc .err.ok{color:var(--g-d)}
+.acc .who{font-weight:800;word-break:break-all}
+.btn.g{display:flex;gap:10px;align-items:center;justify-content:center;background:#fff;color:var(--ink);border:1.5px solid var(--line);box-shadow:0 3px 0 var(--line)}
+.btn.g svg{width:20px;height:20px}
 </style>
 </head>
 <body>
@@ -642,6 +659,7 @@ function today(){ const d = new Date(); return d.getFullYear() + '-' + (d.getMon
 function loadLocal(){ try{ const r = localStorage.getItem(KEY); if(r) S = Object.assign(S, JSON.parse(r)); }catch(e){} }
 function save(){
   try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){}
+  cloudSave();
   if(remoteRef){ clearTimeout(saveTimer); saveTimer = setTimeout(async () => { try{ await remoteRef.set(S); }catch(e){} }, 800); }
 }
 async function initRemote(){
@@ -789,9 +807,11 @@ function renderProfile(){
     <div class="stat"><span>Уроков пройдено</span><b>${doneL} / 20</b></div>
     <div class="stat"><span>Итоговых кейсов</span><b>${doneB} / 5</b></div>
     <div class="stat"><span>Слов просмотрено</span><b>${Object.keys(S.seen).length}</b></div>
+    ${accountHTML()}
     <div style="margin:18px"><button class="btn ghost" id="reset">Сбросить прогресс</button></div>`;
   app.innerHTML = `<div class="screen">${html}</div>` + nav();
   bindNav();
+  bindAccount();
   $('#reset').onclick = () => {
     const m = document.createElement('div'); m.className = 'modal';
     m.innerHTML = `<div class="box"><h3 style="margin:0 0 6px">Сбросить прогресс?</h3><p style="color:#64748b;font-weight:600;margin:0 0 14px">Опыт, пройденные уровни и серия будут удалены.</p>
@@ -987,10 +1007,131 @@ function startCards(){
   draw();
 }
 
+/* ---------- account (Firebase Auth + Firestore) ---------- */
+/* Вставьте сюда конфиг веб-приложения из Firebase Console
+   (Project settings -> Your apps -> Web app -> firebaseConfig).
+   Пока apiKey пустой, вход скрыт и приложение работает только локально. */
+const FIREBASE_CONFIG = {
+  apiKey: 'AIzaSyApNINwAoez2fKsiU_DFGuUfOiT3pIClUs',
+  authDomain: 'chinese-70515.firebaseapp.com',
+  projectId: 'chinese-70515',
+  appId: '1:176270133095:web:d05c609af770f8b93c91c2'
+};
+const SDK = 'https://www.gstatic.com/firebasejs/10.14.1/';
+const OWNER_KEY = 'bizzh_owner';
+const cloud = { on: !!FIREBASE_CONFIG.apiKey, loaded: false, ready: false, user: null, sync: '', t: null, msg: '', busy: false };
+const blankState = () => ({xp:0, done:{}, streak:0, last:'', seen:{}, known:{}, opened:{}});
+const dnum = d => { const a = String(d||'').split('-').map(Number); return a.length === 3 ? a[0]*10000 + a[1]*100 + a[2] : 0; };
+function mergeState(a, b){
+  const o = blankState();
+  o.xp = Math.max(a.xp||0, b.xp||0);
+  ['done','seen','known','opened'].forEach(k => { o[k] = Object.assign({}, a[k]||{}, b[k]||{}); });
+  const da = dnum(a.last), db = dnum(b.last);
+  if(da > db){ o.last = a.last; o.streak = a.streak||0; }
+  else if(db > da){ o.last = b.last; o.streak = b.streak||0; }
+  else { o.last = a.last||''; o.streak = Math.max(a.streak||0, b.streak||0); }
+  return o;
+}
+const syncText = () => cloud.sync === 'err' ? '<span style="color:#dc2626">Не удалось сохранить в облако, повторим при следующем действии</span>' : 'Прогресс сохраняется в аккаунте и доступен на любом устройстве';
+function cloudSave(){
+  if(!cloud.user || !cloud.ready) return;
+  clearTimeout(cloud.t);
+  cloud.t = setTimeout(async () => {
+    try{
+      await cloud.fs.setDoc(cloud.fs.doc(cloud.db, 'users', cloud.user.uid), {data: JSON.stringify(S), updated: Date.now()});
+      cloud.sync = 'ok';
+    }catch(e){ cloud.sync = 'err'; }
+    const el = document.getElementById('accSync'); if(el) el.innerHTML = syncText();
+  }, 1200);
+}
+async function onUser(user){
+  cloud.user = user; cloud.msg = '';
+  if(user){
+    try{
+      const snap = await cloud.fs.getDoc(cloud.fs.doc(cloud.db, 'users', user.uid));
+      let remote = null;
+      if(snap.exists()){ try{ remote = JSON.parse(snap.data().data); }catch(e){} }
+      let owner = null; try{ owner = localStorage.getItem(OWNER_KEY); }catch(e){}
+      const local = Object.assign(blankState(), S);
+      if(!owner || owner === user.uid) S = remote ? mergeState(local, remote) : local;
+      else S = remote ? Object.assign(blankState(), remote) : blankState();
+      try{ localStorage.setItem(OWNER_KEY, user.uid); localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){}
+      cloud.sync = 'ok'; cloud.ready = true; cloudSave();
+    }catch(e){ cloud.sync = 'err'; cloud.ready = false; cloud.msg = 'Не удалось загрузить прогресс. Проверьте правила Firestore и соединение.'; }
+  } else { cloud.ready = false; }
+  render();
+}
+async function initCloud(){
+  if(!cloud.on) return;
+  try{
+    const [A, Au, F] = await Promise.all([import(SDK + 'firebase-app.js'), import(SDK + 'firebase-auth.js'), import(SDK + 'firebase-firestore.js')]);
+    const fb = A.initializeApp(FIREBASE_CONFIG);
+    cloud.au = Au; cloud.fs = F; cloud.auth = Au.getAuth(fb); cloud.db = F.getFirestore(fb);
+    cloud.loaded = true;
+    Au.onAuthStateChanged(cloud.auth, onUser);
+  }catch(e){ cloud.on = false; if(tab === 'me') render(); }
+}
+const GOOGLE_IC = '<svg viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.9 2.4 30.4 0 24 0 14.6 0 6.5 5.4 2.6 13.2l7.9 6.1C12.4 13.6 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.6 5.9c4.4-4.1 7-10.1 7-17.6z"/><path fill="#FBBC05" d="M10.5 28.7c-.5-1.4-.8-3-.8-4.7s.3-3.2.8-4.7l-7.9-6.1C.9 16.4 0 20.1 0 24s.9 7.6 2.6 10.8l7.9-6.1z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.6-5.9c-2.1 1.4-4.9 2.3-8.3 2.3-6.3 0-11.6-4.1-13.5-9.8l-7.9 6.1C6.5 42.6 14.6 48 24 48z"/></svg>';
+function authErr(e){
+  const m = {
+    'auth/invalid-email':'Некорректный email', 'auth/missing-password':'Введите пароль', 'auth/missing-email':'Введите email',
+    'auth/weak-password':'Пароль должен быть не короче 6 символов',
+    'auth/email-already-in-use':'Этот email уже зарегистрирован, нажмите «Войти»',
+    'auth/invalid-credential':'Неверный email или пароль', 'auth/wrong-password':'Неверный email или пароль', 'auth/user-not-found':'Неверный email или пароль',
+    'auth/popup-closed-by-user':'Окно входа было закрыто', 'auth/cancelled-popup-request':'Окно входа было закрыто',
+    'auth/popup-blocked':'Браузер заблокировал окно входа, разрешите всплывающие окна',
+    'auth/network-request-failed':'Нет соединения с интернетом', 'auth/too-many-requests':'Слишком много попыток, попробуйте позже',
+    'auth/unauthorized-domain':'Адрес сайта не добавлен в Authorized domains в Firebase'
+  };
+  return m[e && e.code] || 'Не удалось выполнить вход';
+}
+function accountHTML(){
+  if(!cloud.on) return '';
+  if(!cloud.loaded) return `<div class="acc"><h3>Аккаунт</h3><p style="margin:0">Загрузка…</p></div>`;
+  if(cloud.user){
+    const name = esc(cloud.user.email || cloud.user.displayName || 'аккаунт');
+    return `<div class="acc"><h3>Аккаунт</h3><p>Вы вошли как <span class="who">${name}</span></p>
+      <p id="accSync" style="font-size:13px">${syncText()}</p>
+      ${cloud.msg ? `<div class="err">${esc(cloud.msg)}</div>` : ''}
+      <button class="btn ghost" id="accOut">Выйти</button></div>`;
+  }
+  return `<div class="acc"><h3>Войти в аккаунт</h3><p>Прогресс сохранится в облаке и будет доступен на любом устройстве</p>
+    <button class="btn g" id="accG">${GOOGLE_IC}Войти через Google</button>
+    <div class="or">или по email</div>
+    <input id="accE" type="email" inputmode="email" autocomplete="email" placeholder="Email">
+    <input id="accP" type="password" autocomplete="current-password" placeholder="Пароль (от 6 символов)">
+    <div class="row"><button class="btn" id="accIn">Войти</button><button class="btn ghost" id="accUp">Создать аккаунт</button></div>
+    <button class="lnk" id="accRs">Забыли пароль?</button>
+    <div class="err" id="accErr"></div></div>`;
+}
+function bindAccount(){
+  if(!cloud.on || !cloud.loaded) return;
+  if(cloud.user){ $('#accOut').onclick = signOutAcc; return; }
+  const err = (t, ok) => { const el = $('#accErr'); el.textContent = t || ''; el.classList.toggle('ok', !!ok); };
+  const vals = () => [$('#accE').value.trim(), $('#accP').value];
+  const run = async fn => { if(cloud.busy) return; cloud.busy = true; err(''); try{ await fn(); }catch(e){ err(authErr(e)); } cloud.busy = false; };
+  $('#accG').onclick = () => run(() => cloud.au.signInWithPopup(cloud.auth, new cloud.au.GoogleAuthProvider()));
+  $('#accIn').onclick = () => run(() => { const [e, p] = vals(); return cloud.au.signInWithEmailAndPassword(cloud.auth, e, p); });
+  $('#accUp').onclick = () => run(() => { const [e, p] = vals(); return cloud.au.createUserWithEmailAndPassword(cloud.auth, e, p); });
+  $('#accRs').onclick = () => run(async () => {
+    const [e] = vals(); if(!e){ err('Введите email, на него придёт письмо для сброса'); return; }
+    await cloud.au.sendPasswordResetEmail(cloud.auth, e); err('Письмо для сброса пароля отправлено', true);
+  });
+}
+async function signOutAcc(){
+  try{ await cloud.au.signOut(cloud.auth); }catch(e){}
+  clearTimeout(cloud.t); cloud.user = null; cloud.ready = false; cloud.msg = '';
+  S = blankState();
+  try{ localStorage.removeItem(KEY); localStorage.removeItem(OWNER_KEY); }catch(e){}
+  tab = 'path'; render(); window.scrollTo(0, 0);
+}
+
 /* ---------- boot ---------- */
 loadLocal();
 render();
 initRemote();
+initCloud();
+
 })();
 </script>
 </body>
